@@ -1,0 +1,431 @@
+diff -urN a/weather/data/weather.conf.in b/weather/data/weather.conf.in
+--- a/weather/data/weather.conf.in	2021-06-05 15:51:58.810225000 -0300
++++ b/weather/data/weather.conf.in	2021-06-13 18:50:34.375986081 -0300
+@@ -118,6 +118,10 @@
+ #{in seconds. Set 0 to have never-ending dialogs.}
+ dialog duration = 7
+ 
++#s OpenWeatherMap api key:
++#{Enter your OpenWeatherMap api key.}
++api key = 8fed0ea13fa40f3856b46741f8849644
++
+ #F[Info;dialog-information]
+ frame_info =
+ 
+diff -urN a/weather/src/applet-config.c b/weather/src/applet-config.c
+--- a/weather/src/applet-config.c	2021-06-05 15:51:58.810225000 -0300
++++ b/weather/src/applet-config.c	2021-06-13 18:49:54.289009915 -0300
+@@ -40,7 +40,8 @@
+ 	myConfig.bDesklet3D = CD_CONFIG_GET_BOOLEAN_WITH_DEFAULT ("Configuration", "3D desket", FALSE);
+ 	
+ 	myConfig.cRenderer = CD_CONFIG_GET_STRING ("Configuration", "renderer");
+-	
++    myConfig.cApiKey = CD_CONFIG_GET_STRING_WITH_DEFAULT ("Configuration", "api key", "8fed0ea13fa40f3856b46741f8849644");	
++
+ 	gchar *cName = CD_CONFIG_GET_STRING ("Icon", "name");
+ 	myConfig.bSetName = (cName == NULL);
+ 	g_free (cName);
+diff -urN a/weather/src/applet-notifications.c b/weather/src/applet-notifications.c
+--- a/weather/src/applet-notifications.c	2021-06-05 15:51:58.810225000 -0300
++++ b/weather/src/applet-notifications.c	2021-06-13 13:54:36.729821534 -0300
+@@ -109,7 +109,7 @@
+ 	if (pClickedIcon != NULL)
+ 	{
+ 		myData.iClickedDay = _get_num_day_from_icon (myApplet, pClickedIcon);
+-		CD_APPLET_ADD_IN_MENU_WITH_STOCK (D_("Open weather.com (double-click)"), GLDI_ICON_NAME_JUMP_TO, _cd_weather_show_site, CD_APPLET_MY_MENU);
++		CD_APPLET_ADD_IN_MENU_WITH_STOCK (D_("Open openweathermap.com (double-click)"), GLDI_ICON_NAME_JUMP_TO, _cd_weather_show_site, CD_APPLET_MY_MENU);
+ 	}
+ 	CD_APPLET_ADD_IN_MENU_WITH_STOCK (D_("Reload now"), GLDI_ICON_NAME_REFRESH, _cd_weather_reload, CD_APPLET_MY_MENU);
+ CD_APPLET_ON_BUILD_MENU_END
+@@ -194,7 +194,7 @@
+ 	
+ 	// show a dialog with the current conditions.
+ 	CurrentContitions *cc = &myData.wdata.currentConditions;
+-	gldi_dialog_show_temporary_with_icon_printf ("%s:\n %s : %s%s\n %s : %s%s\n %s : %s - %s : %s%s\n %s : %s  %s %s",
++	gldi_dialog_show_temporary_with_icon_printf ("%s\n %s : %s%s\n %s : %s%s\n %s : %s - %s : %s%s\n %s : %s  %s : %s",
+ 		myIcon, myContainer, myConfig.cDialogDuration, myIcon->cFileName,
+ 		cc->cDataAcquisitionDate,
+ 		D_("Temperature"), _display (cc->now.cTempMax), myData.wdata.units.cTemp,
+diff -urN a/weather/src/applet-read-data.c b/weather/src/applet-read-data.c
+--- a/weather/src/applet-read-data.c	2021-06-05 15:51:58.810225000 -0300
++++ b/weather/src/applet-read-data.c	2024-05-17 07:31:54.175143472 -0300
+@@ -30,13 +30,9 @@
+ #include "applet-load-icons.h"
+ #include "applet-read-data.h"
+ 
+-// Credentials used by Cairo-Dock for Yahoo weather
+-// please do not use them for any other purpose than this applet
+-#define APP_ID "kv8SljKW"
+-#define CLIENT_ID "dj0yJmk9N3d2dVZVUHIxWVVpJnM9Y29uc3VtZXJzZWNyZXQmc3Y9MCZ4PWM0"
+-#define CLIENT_SECRET "'2c776c9ee22643fec:59g53568d92142f97ec12e'"
+ 
+-static gchar *_get_oauth_header (const gchar *cLocationName, gboolean bISUnits);
++static gchar* get_icon_code(const gchar *icon);
++
+ 
+ static xmlDocPtr _cd_weather_open_xml_buffer (const gchar *cData, xmlNodePtr *root_node, const gchar *cRootNodeName, GError **erreur)
+ {
+@@ -47,7 +43,8 @@
+ 	}
+ 	int length = strlen (cData);
+ 	
+-	gchar *cRootNode = g_strdup_printf ("<%s ", cRootNodeName);
++	gchar *cRootNode = g_strdup_printf ("<%s", cRootNodeName);
++    //cd_debug("DEBUG:: root=%s, data=%s",cRootNode,cData);
+ 	if (g_strstr_len (cData, length, cRootNode) == NULL)  // on intercepte le cas ou une connexion a un hotspot nous renvoie une page meme quand la connexion a weather.com n'a pas pu se faire, car ca fait planter libxml.
+ 	{
+ 		g_set_error (erreur, 1, 1, "uncorrect data (no connection ?)");
+@@ -60,7 +57,7 @@
+ 	xmlDocPtr doc = xmlParseMemory (cData, length);
+ 	if (doc == NULL)
+ 	{
+-		g_set_error (erreur, 1, 1, "uncorrect data (no connection ?)");
++		g_set_error (erreur, 1, 1, "uncorrect data 2 (no connection ?)");
+ 		return NULL;
+ 	}
+ 	
+@@ -73,20 +70,7 @@
+ 	*root_node = noeud;
+ 	return doc;
+ }
+-/* Not used
+-static xmlDocPtr _cd_weather_open_xml_file (const gchar *cDataFilePath, xmlNodePtr *root_node, const gchar *cRootNodeName, GError **erreur)
+-{
+-	gsize length = 0;
+-	gchar *cContent = NULL;
+-	g_file_get_contents (cDataFilePath,
+-		&cContent,
+-		&length,
+-		NULL);
+-	xmlDocPtr doc = _cd_weather_open_xml_buffer (cContent, root_node, cRootNodeName, erreur);
+-	g_free (cContent);
+-	return doc;
+-}
+-*/
++
+ static void _cd_weather_close_xml_file (xmlDocPtr doc)
+ {
+ 	if (doc != NULL)
+@@ -125,7 +109,7 @@
+ {
+ 	GError *tmp_erreur = NULL;
+ 	xmlNodePtr noeud = NULL;
+-	xmlDocPtr doc = _cd_weather_open_xml_buffer (cData, &noeud, "rss", &tmp_erreur);
++	xmlDocPtr doc = _cd_weather_open_xml_buffer (cData, &noeud, "current", &tmp_erreur);
+ 	if (tmp_erreur != NULL)
+ 	{
+ 		g_propagate_error (erreur, tmp_erreur);
+@@ -137,60 +121,90 @@
+ 	int i=0;  // day counter
+ 	for (rss_child = noeud->xmlChildrenNode; rss_child != NULL; rss_child = rss_child->next)
+ 	{
+-		if (xmlStrcmp (rss_child->name, BAD_CAST "channel") == 0)
++		if (xmlStrcmp (rss_child->name, BAD_CAST "city") == 0)
+ 		{
++            pSharedMemory->wdata.cCity = xmlGetProp (rss_child, BAD_CAST "name");
++            pSharedMemory->wdata.cLink = g_strdup_printf("https://openweathermap.org/city/%s",xmlGetProp (rss_child, BAD_CAST "id"));   
+ 			for (channel_child = rss_child->children; channel_child != NULL; channel_child = channel_child->next)
+ 			{
+-				if (xmlStrcmp (channel_child->name, BAD_CAST "units") == 0)
+-				{
+-					pSharedMemory->wdata.units.cTemp = xmlGetProp (channel_child, BAD_CAST "temperature");
+-					pSharedMemory->wdata.units.cSpeed = xmlGetProp (channel_child, BAD_CAST "speed");
+-					pSharedMemory->wdata.units.cPressure = xmlGetProp (channel_child, BAD_CAST "pressure");
+-				}
+-				else if (xmlStrcmp (channel_child->name, BAD_CAST "link") == 0)
+-				{
+-					pSharedMemory->wdata.cLink = xmlNodeGetContent (channel_child);
+-				}
+-				else if (xmlStrcmp (channel_child->name, BAD_CAST "location") == 0)
+-				{
+-					pSharedMemory->wdata.cCity = xmlGetProp (channel_child, BAD_CAST "city");
+-					pSharedMemory->wdata.cCountry = xmlGetProp (channel_child, BAD_CAST "country");
+-				}
+-				else if (xmlStrcmp (channel_child->name, BAD_CAST "wind") == 0)
+-				{
+-					pSharedMemory->wdata.currentConditions.cWindDirection = xmlGetProp (channel_child, BAD_CAST "direction");
+-					pSharedMemory->wdata.currentConditions.cWindSpeed = xmlGetProp (channel_child, BAD_CAST "speed");
+-				}
+-				else if (xmlStrcmp (channel_child->name, BAD_CAST "atmosphere") == 0)
+-				{
+-					pSharedMemory->wdata.currentConditions.cHumidity = xmlGetProp (channel_child, BAD_CAST "humidity");
+-					pSharedMemory->wdata.currentConditions.cPressure = xmlGetProp (channel_child, BAD_CAST "pressure");
+-				}
+-				else if (xmlStrcmp (channel_child->name, BAD_CAST "astronomy") == 0)
++                if (xmlStrcmp (channel_child->name, BAD_CAST "country") == 0)
+ 				{
+-					pSharedMemory->wdata.currentConditions.cSunRise = xmlGetProp (channel_child, BAD_CAST "sunrise");
+-					pSharedMemory->wdata.currentConditions.cSunSet = xmlGetProp (channel_child, BAD_CAST "sunset");
+-				}
+-				else if (xmlStrcmp (channel_child->name, BAD_CAST "ttl") == 0)
++                    pSharedMemory->wdata.cCountry = xmlNodeGetContent (channel_child);
++                }
++                else if (xmlStrcmp (channel_child->name, BAD_CAST "sun") == 0)
++                {
++                    GTimeZone *tz = g_time_zone_new_utc();
++                    GDateTime *date = g_date_time_new_from_iso8601(xmlGetProp(channel_child, BAD_CAST "rise"),tz);
++                    GDateTime *local = g_date_time_to_local(date);
++                    pSharedMemory->wdata.currentConditions.cSunRise = g_date_time_format(local,"%R");
++                    date = g_date_time_new_from_iso8601(xmlGetProp(channel_child, BAD_CAST "set"),tz);
++                    local = g_date_time_to_local(date);
++                    pSharedMemory->wdata.currentConditions.cSunSet = g_date_time_format(local,"%R");
++                    g_date_time_unref(local);
++                    g_date_time_unref(date);
++                    g_time_zone_unref(tz);
++                }
++            }
++        }
++        else if (xmlStrcmp (rss_child->name, BAD_CAST "temperature") == 0)
++        {
++            pSharedMemory->wdata.currentConditions.now.cTempMax = g_strsplit_set(xmlGetProp(rss_child, BAD_CAST "value"),".",-1)[0];
++            pSharedMemory->wdata.units.cTemp = "C";
++        }
++        else if (xmlStrcmp (rss_child->name, BAD_CAST "humidity") == 0)
++        {
++            pSharedMemory->wdata.currentConditions.cHumidity = xmlGetProp (rss_child, BAD_CAST "value");
++        }
++        else if (xmlStrcmp (rss_child->name, BAD_CAST "pressure") == 0)
++        {
++            pSharedMemory->wdata.currentConditions.cPressure = xmlGetProp (rss_child, BAD_CAST "value");
++            pSharedMemory->wdata.units.cPressure = xmlGetProp (rss_child, BAD_CAST "unit");
++        }
++        else if (xmlStrcmp (rss_child->name, BAD_CAST "wind") == 0)
++        {
++            for (channel_child = rss_child->children; channel_child != NULL; channel_child = channel_child->next)
++			{
++                if (xmlStrcmp (channel_child->name, BAD_CAST "speed") == 0)
+ 				{
+-					xmlChar *ttl = xmlNodeGetContent (channel_child);
+-					pSharedMemory->wdata.currentConditions.ttl = ttl ? atoi((gchar*)ttl) : 0;
+-					xmlFree (ttl);
+-				}
+-				else if (xmlStrcmp (channel_child->name, BAD_CAST "lastBuildDate") == 0)
++                    pSharedMemory->wdata.currentConditions.cWindSpeed = xmlGetProp (channel_child, BAD_CAST "value");
++                    pSharedMemory->wdata.units.cSpeed = xmlGetProp (channel_child, BAD_CAST "unit");
++                }
++                else if (xmlStrcmp (channel_child->name, BAD_CAST "direction") == 0)
+ 				{
+-					pSharedMemory->wdata.currentConditions.cDataAcquisitionDate = xmlNodeGetContent (channel_child);
+-				}
++                    pSharedMemory->wdata.currentConditions.cWindDirection = xmlGetProp (channel_child, BAD_CAST "name");
++                }
++            }
++        }
++        else if (xmlStrcmp (rss_child->name, BAD_CAST "weather") == 0)
++        {
++            pSharedMemory->wdata.currentConditions.now.cWeatherDescription = xmlGetProp (rss_child, BAD_CAST "value");
++            pSharedMemory->wdata.currentConditions.now.cIconNumber = get_icon_code(xmlGetProp(rss_child, BAD_CAST "icon"));
++        }
++        else if (xmlStrcmp (rss_child->name, BAD_CAST "lastupdate") == 0)
++        {
++            GTimeZone *tz = g_time_zone_new_utc();
++            GDateTime *date = g_date_time_new_from_iso8601(xmlGetProp(rss_child, BAD_CAST "value"),tz);
++            GDateTime *local = g_date_time_to_local(date);
++            pSharedMemory->wdata.currentConditions.cDataAcquisitionDate = g_date_time_format(local,"%a %d %b %Y %T");
++            g_date_time_unref(local);
++            g_date_time_unref(date);
++            g_time_zone_unref(tz);
++        }
++        pSharedMemory->wdata.currentConditions.ttl = 15;    //15 minutes
++        
++        
++
++/*						
+ 				else if (xmlStrcmp (channel_child->name, BAD_CAST "item") == 0)
+ 				{
+ 					for (item_child = channel_child->children; item_child != NULL; item_child = item_child->next)
+ 					{
+ 						if (xmlStrcmp (item_child->name, BAD_CAST "condition") == 0)
+ 						{
+-							pSharedMemory->wdata.currentConditions.now.cIconNumber = xmlGetProp (item_child, BAD_CAST "code");
++							
+ 							pSharedMemory->wdata.currentConditions.now.cDate = xmlGetProp (item_child, BAD_CAST "date");
+-							pSharedMemory->wdata.currentConditions.now.cTempMax = xmlGetProp (item_child, BAD_CAST "temp");
+-							pSharedMemory->wdata.currentConditions.now.cWeatherDescription = xmlGetProp (item_child, BAD_CAST "text");
++							
++							
+ 						}
+ 						else if (xmlStrcmp (item_child->name, BAD_CAST "forecast") == 0 && i<WEATHER_NB_DAYS_MAX)
+ 						{
+@@ -205,56 +219,29 @@
+ 					}
+ 				}
+ 			}
+-		}
++		}*/
+ 	}
+ 	_cd_weather_close_xml_file (doc);
+ }
+ 
+-const gchar *cBaseUrl = "https://weather-ydn-yql.media.yahoo.com/forecastrss";
+-const gchar *cBaseUrlEsc = "https%3A%2F%2Fweather-ydn-yql.media.yahoo.com%2Fforecastrss";
++const gchar *cBaseUrl = "https://api.openweathermap.org/data/2.5/weather";
+ 	
+ static void cd_weather_get_distant_data (CDSharedMemory *pSharedMemory)
+ {
+ 	pSharedMemory->bErrorInThread = FALSE;
+ 	
+-	//\____________________ remove spaces, and add a comma if necessary
+-	gchar *r = strchr(pSharedMemory->cLocationCode, ' '), *w = r;
+-	if (r)
+-	{
+-		const gchar *r0 = pSharedMemory->cLocationCode;  // just for the sake of readability
+-		while (*r)
+-		{
+-			if (*r == ' ')
+-			{
+-				if (w != r0 && *(w-1) != ',')
+-					*w++ = ',';
+-			}
+-			else
+-			{
+-				if (*r != ',' || (w != r0 && *(w-1) != ','))
+-					*w++ = *r;
+-			}
+-			r++;
+-		}
+-		*w = '\0';
+-	}
+ 	cd_debug("location code: %s", pSharedMemory->cLocationCode);
+ 	
+ 	//\____________________ get the rss feed
+ 	GError *erreur = NULL;
+-	gchar *cURL = g_strdup_printf("%s?location=%s&format=xml&u=%c", cBaseUrl, pSharedMemory->cLocationCode, pSharedMemory->bISUnits ? 'c' : 'f');
+-	gchar *oauth_header = _get_oauth_header (pSharedMemory->cLocationCode, pSharedMemory->bISUnits);
+-	gchar *cCCData = cairo_dock_get_url_data_with_headers (cURL, FALSE, &erreur,
+-		"Authorization", oauth_header,
+-		"X-Yahoo-App-Id", APP_ID,
+-		NULL);
++	gchar *cURL = g_strdup_printf("%s?id=%s&appid=%s&mode=xml&units=metric", cBaseUrl, pSharedMemory->cLocationCode, pSharedMemory->cApiKey);
++	gchar *cCCData = cairo_dock_get_url_data (cURL, &erreur);
+ 	if (erreur != NULL)
+ 	{
+ 		cd_warning ("while downloading current conditions data:\n%s -> %s", cURL, erreur->message);
+ 		g_error_free (erreur);
+ 		erreur = NULL;
+ 	}
+-	g_free (oauth_header);
+ 	g_free (cURL);
+ 	
+ 	if (cCCData == NULL)
+@@ -308,7 +295,7 @@
+ {
+ 	xmlFree (pData->cCity);
+ 	xmlFree (pData->cCountry);
+-	_reset_units (&pData->units);
++	//_reset_units (&pData->units);
+ 	_reset_current_conditions (&pData->currentConditions);
+ 	int i;
+ 	for (i = 0; i < WEATHER_NB_DAYS_MAX; i ++)
+@@ -340,6 +327,7 @@
+ 	pSharedMemory->bISUnits = myConfig.bISUnits;
+ 	pSharedMemory->bCurrentConditions = myConfig.bCurrentConditions;
+ 	pSharedMemory->pApplet = myApplet;
++    pSharedMemory->cApiKey = g_strdup(myConfig.cApiKey);
+ 	
+ 	myData.pTask = gldi_task_new_full (3600,  // start with 1h period, it will be adjusted according to the TTL
+ 		(GldiGetDataAsyncFunc) cd_weather_get_distant_data,
+@@ -349,67 +337,21 @@
+ 	gldi_task_launch (myData.pTask);
+ }
+ 
+-#include <openssl/sha.h>
+-#include <openssl/hmac.h>
+-#include <openssl/evp.h>
+-#include <sys/time.h>
+-
+-static guchar *_hmac_sha1_base64(const gchar *key, const gchar *data)
+-{
+-	size_t key_len = strlen(++key);
+-	size_t data_len = strlen(data);
+-	uint8_t md[64];  // SHA1_Message_Block_Size = 64 bytes
+-	guint md_len=64;
+-	if (!HMAC(EVP_sha1(), key, key_len, (guchar*)data, data_len, md, &md_len))  // data is URL-encoded, so is actually a guchar*
+-	{
+-		//#include <openssl/err.h>
+-		//ERR_clear_error();
+-	}
+-	guchar *b64_output = malloc((md_len+1)*4/3+1);  // taking into account the padding, and the final '\0' inserted by the function
+-	EVP_EncodeBlock(b64_output, md, md_len);
+-	return b64_output;
+-}
+-
+-static gchar *_get_oauth_header (const gchar *cLocationName, gboolean bISUnits)
+-{
+-	// Oauth authentication: the idea is to join to the headers a hash of the GET request's signature
+-	// the signature is made of: the method (GET), the url, some query parameters (like location, units and format), and the various oauth parameters (except of course the hash)
+-	// they must be ordered, so that both end agree on how to form the string and calculate the hash
+-	
+-	// first build the parameters string
+-	gchar *cLocationNameEsc = g_uri_escape_string(cLocationName, NULL, FALSE);
+-	struct timeval tv;
+-	gettimeofday(&tv, NULL);
+-	const gchar *nonce = g_strdup_printf("%032d", rand());  // 32 bytes; it's not like we really need to be secretive...
+-	gchar *params_sorted = g_strdup_printf ("format=xml&location=%s&oauth_consumer_key=%s&oauth_nonce=%s&oauth_signature_method=%s&oauth_timestamp=%ld&oauth_version=%s&u=%c",
+-		cLocationNameEsc,
+-		CLIENT_ID,
+-		nonce,
+-		"HMAC-SHA1",
+-		tv.tv_sec,
+-		"1.0",
+-		bISUnits ? 'c' : 'f');  // all parameters are sorted by their key, and their value is URL-encoded.
+-	gchar *params_sorted_esc = g_uri_escape_string(params_sorted, NULL, FALSE);
+-	// then build the request's signature string
+-	gchar *signature_base_str = g_strdup_printf ("GET&%s&%s",
+-		cBaseUrlEsc,
+-		params_sorted_esc);
+-	// now calculate the hash of the signature
+-	gchar *key = g_strdup (CLIENT_SECRET), *k=key;
+-	while (*k) (*k++)--;
+-	guchar *oauth_signature = _hmac_sha1_base64(key, signature_base_str);
+-	g_free (key);
+-	
+-	// finally build the oauth header, containing all the oauth parameters
+-	gchar *auth_header = g_strdup_printf("OAuth oauth_consumer_key=\"%s\", oauth_nonce=\"%s\", oauth_signature_method=\"%s\", oauth_timestamp=\"%ld\", oauth_version=\"%s\", oauth_signature=\"%s\"",
+-		CLIENT_ID,
+-		nonce,
+-		"HMAC-SHA1",
+-		tv.tv_sec,
+-		"1.0",
+-		oauth_signature);
+-	free(signature_base_str);
+-	free(cLocationNameEsc);
+-	free(oauth_signature);
+-	return auth_header;
++const gchar* CODES[2][18] = {
++    {"01d","01n","02d","02n","03d","03n","04d","04n","09d","09n","10d","10n","11d","11n","13d","13n","50d","50n"},
++    {"32","31","30","29","28","27","26","26","40","40","40","40","35","35","41","41","19","19"}
++};
++
++static gchar* get_icon_code(const gchar *icon)
++{
++    for(int i=0; i<18; i++)
++    {
++        if(g_strcmp0(icon,CODES[0][i]) == 0)
++        {
++            return CODES[1][i];
++        }
++    }
++    return "na";
+ }
++
++
+diff -urN a/weather/src/applet-struct.h b/weather/src/applet-struct.h
+--- a/weather/src/applet-struct.h	2021-06-05 15:51:58.810225000 -0300
++++ b/weather/src/applet-struct.h	2021-06-13 18:47:41.853089692 -0300
+@@ -47,6 +47,7 @@
+ 	gchar *cThemePath;
+ 	gboolean bDesklet3D;
+ 	gboolean bSetName;
++    gchar *cApiKey;
+ 	} ;
+ 
+ typedef struct {
+@@ -92,6 +93,7 @@
+ 	CDWeatherData wdata;
+ 	gboolean bErrorInThread;
+ 	GldiModuleInstance *pApplet;
++    gchar *cApiKey;
+ 	} CDSharedMemory;
+ 
+ struct _AppletData {
